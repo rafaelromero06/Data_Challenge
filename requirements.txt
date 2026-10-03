@@ -1,0 +1,12 @@
+pandas
+numpy
+xgboost
+shap
+sqlalchemy
+psycopg2-binary
+python-dotenv
+fastapi
+uvicorn
+pyarrow
+matplotlib
+ipykernel

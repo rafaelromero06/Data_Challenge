@@ -1,0 +1,55 @@
+{
+  "model_id": "demanda-xgb-h30",
+  "feature_version": "v3-sensores-3anios",
+  "features": [
+    "id_ruta",
+    "minuto_dia",
+    "dia_semana",
+    "mes",
+    "dia_del_anio",
+    "tipo_dia",
+    "es_festivo",
+    "precarnaval",
+    "carnaval_central",
+    "semana_santa",
+    "impacto_evento",
+    "lag_h",
+    "lag_h_mas_1",
+    "media_1h_previa",
+    "ratio_hoy",
+    "nivel_28d",
+    "lag_1d",
+    "lag_7d",
+    "prom_4_semanas",
+    "lag_364d",
+    "viajes_1h_previa",
+    "viajes_habituales"
+  ],
+  "horizonte_min": 30,
+  "data_cutoff": "2025-12-30 23:45:00",
+  "corte_validacion": "2025-02-11 09:45:00",
+  "corte_prueba": "2025-05-30 05:00:00",
+  "generated_at": "2026-09-30T03:56:24.086289+00:00",
+  "semilla": 42,
+  "fuente": "sensores",
+  "metricas_prueba": {
+    "Base: sem. pasada": {
+      "MAE": 31.70729583841198,
+      "RMSE": 54.28753312529067,
+      "WAPE": 0.19329086602603474,
+      "sMAPE": 0.2741510427361771
+    },
+    "Base: prom 4 sem": {
+      "MAE": 25.932501160833482,
+      "RMSE": 43.47642034678691,
+      "WAPE": 0.15808713657398102,
+      "sMAPE": 0.23405612560886696
+    },
+    "XGBoost": {
+      "MAE": 17.037660304041154,
+      "RMSE": 26.259118315265113,
+      "WAPE": 0.10386329165402729,
+      "sMAPE": 0.19815650132698684
+    }
+  }
+}
