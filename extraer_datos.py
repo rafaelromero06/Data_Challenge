@@ -1,27 +1,3 @@
-"""
-Extraccion de TODO el historico disponible - SOBUSA Data Challenge 2026.
-
-timbradas_segmentos solo cubre 2023-01-01 a 2023-02-27. La base guarda mucho
-mas: los sensores de pasajeros (conteo_pasajeros_destino, ~176 millones de
-lecturas) y la programacion de viajes (progvehiculos) de 2023 a 2025.
-
-Este script arma una copia local en datos/ para que el EDA y el entrenamiento
-no dependan de consultas pesadas:
-  - viajes.parquet          un registro por viaje programado (progvehiculos)
-  - demanda_15min.parquet   subidas y bajadas por ruta y franja de 15 min,
-                            desde las lecturas de los sensores (hora real de
-                            cada subida, no la hora de salida del bus)
-  - estacionalidades.parquet, novedades.parquet   calendario
-  - rutas.parquet           nombre de cada ruta
-
-conteo_pasajeros_destino no tiene indice por fecha, solo por idprogramacion:
-por eso se consulta mes a mes con la lista de viajes del mes, agregando en el
-servidor. Cada mes se guarda aparte (datos/conteo_mensual/), asi que si se
-corta se puede volver a correr y retoma donde iba.
-
-Uso:  python extraer_datos.py        (tarda del orden de 15-30 minuto)
-"""
-
 import time
 from pathlib import Path
 
@@ -40,8 +16,6 @@ QUERY_VIAJES = """
     FROM public.progvehiculos
 """
 
-# Subidas por la hora real de cada lectura del sensor. Las lecturas con
-# cantidad negativa (reinicios del contador) no suman: se cuentan aparte.
 QUERY_CONTEO = """
     SELECT p.idruta                                        AS id_ruta,
            date_bin('15 minutes', c.fecha, TIMESTAMP '2000-01-01') AS ts,
@@ -60,7 +34,6 @@ QUERY_CONTEO = """
 
 
 def _consultar_conteo(conn, ids: list) -> pd.DataFrame:
-    """Si una consulta excede el timeout, parte la lista en dos y reintenta."""
     try:
         return pd.read_sql(text(QUERY_CONTEO), conn, params={"ids": ids})
     except Exception as e:
@@ -102,9 +75,6 @@ def main():
         print(f"  {mes}: {len(ids):,} viajes -> {len(df):,} franjas, "
               f"{df['subidas'].sum():,.0f} subidas ({time.perf_counter() - t0:.0f}s)", flush=True)
 
-    # Un viaje que cruza la medianoche de fin de mes deja la misma franja en dos
-    # archivos: se vuelve a agregar. (nro_viajes/vehiculos pueden sobrecontar 1
-    # en esas pocas franjas.)
     partes = pd.concat([pd.read_parquet(a) for a in sorted(CARPETA_MES.glob("*.parquet"))])
     demanda = partes.groupby(["id_ruta", "ts"], as_index=False).agg(
         subidas=("subidas", "sum"), bajadas=("bajadas", "sum"),

@@ -1,36 +1,3 @@
-"""
-
-
-Fuente: las lecturas de los sensores de pasajeros (conteo_pasajeros_destino)
-de 2023 a 2025, agregadas por ruta y franja de 15 min segun la hora real de
-cada subida. Las descarga extraer_datos.py a datos/demanda_15min.parquet.
-(Antes se usaba timbradas_segmentos: solo cubre 8 semanas de 2023 y sus horas
-estan corridas 2-3 h respecto de los sensores y los despachos; ver eda.ipynb.)
-
-Modos de ejecucion:
-  - Con datos/demanda_15min.parquet: datos reales (corra antes extraer_datos.py).
-  - Sin el: datos sinteticos con la misma forma, para probar el pipeline.
-
-Que hace:
-  1. Carga subidas por ruta y franja de 15 min y aplica las reglas de calidad
-     del EDA: dias sin lecturas del sensor (el ultimo de cada mes) y franjas
-     con lecturas imposibles quedan como faltantes, no como cero.
-  2. Arma una grilla regular de 15 min por ruta.
-  3. Para cada horizonte (30, 60, 120 min, RF-005) construye variables que
-     solo usan informacion disponible al momento de predecir (seccion 9.3):
-     calendario, demanda reciente, estacionalidad semanal y anual, nivel de
-     la ruta y oferta de viajes. El detalle esta en feature_engineering.ipynb.
-  4. Compara XGBoost contra dos lineas base (seccion 9.1).
-  5. Reporta MAE, RMSE, WAPE y sMAPE, global, por ruta y por tipo de dia.
-  6. Calcula importancia de variables con SHAP (seccion 9.4).
-  7. Guarda cada modelo con sus metadatos en la carpeta modelos/ (seccion 9.2).
-
-Los modelos guardados se sirven con api_demanda.py (FastAPI).
-
-Pendiente (siguientes escalones): nivel segmento y sentido, intervalos de
-confianza.
-"""
-
 import json
 import os
 from datetime import datetime, timezone
@@ -47,36 +14,29 @@ except ImportError:
     pass
 
 RANDOM_SEED = 42
-PASO_MIN = 15                        # franjas de 15 minutos
-PASOS_DIA = 24 * 60 // PASO_MIN      # 96 franjas por dia
-PASOS_SEMANA = 7 * PASOS_DIA         # 672 franjas por semana
-PASOS_ANIO = 52 * PASOS_SEMANA       # 364 dias: mismo dia de la semana un anio antes
-HORIZONTES_MIN = [30, 60, 120]       # RF-005
+PASO_MIN = 15
+PASOS_DIA = 24 * 60 // PASO_MIN
+PASOS_SEMANA = 7 * PASOS_DIA
+PASOS_ANIO = 52 * PASOS_SEMANA
+HORIZONTES_MIN = [30, 60, 120]
 FEATURE_VERSION = "v3-sensores-3anios"
 
 CARPETA_DATOS = Path(__file__).resolve().parent / "datos"
 ARCHIVO_DEMANDA = CARPETA_DATOS / "demanda_15min.parquet"
+CARPETA_MODELOS = Path(__file__).resolve().parent / "modelos"
 
-# Reglas de calidad (ver eda.ipynb, seccion 2)
-MIN_FRACCION_LECTURAS_DIA = 0.05     # dia con < 5% de las lecturas habituales -> sin datos
-MAX_SUBIDAS_LECTURA = 90             # una lectura (~1 min) no puede superar la capacidad del bus
+MIN_FRACCION_LECTURAS_DIA = 0.05
+MAX_SUBIDAS_LECTURA = 90
 
 FEATURES = [
-    # calendario (se conoce de antemano)
     "id_ruta", "minuto_dia", "dia_semana", "mes", "dia_del_anio",
     "tipo_dia", "es_festivo", "precarnaval", "carnaval_central", "semana_santa", "impacto_evento",
-    # demanda reciente (hasta la franja de referencia t - h)
     "lag_h", "lag_h_mas_1", "media_1h_previa", "ratio_hoy", "nivel_28d",
-    # estacionalidad semanal y anual
     "lag_1d", "lag_7d", "prom_4_semanas", "lag_364d",
-    # oferta de viajes: la reciente y la habitual (la futura no se conoce, ver EDA)
     "viajes_1h_previa", "viajes_habituales",
 ]
 
 
-# ---------------------------------------------------------------------------
-# 1. CARGA Y LIMPIEZA DE DATOS
-# ---------------------------------------------------------------------------
 def cargar_datos() -> pd.DataFrame:
     if ARCHIVO_DEMANDA.exists():
         return limpiar_demanda(pd.read_parquet(ARCHIVO_DEMANDA))
@@ -85,17 +45,13 @@ def cargar_datos() -> pd.DataFrame:
 
 
 def limpiar_demanda(df: pd.DataFrame, verbose: bool = True) -> pd.DataFrame:
-    """Reglas de validez (seccion 6.3) encontradas en el EDA."""
     df = df.copy()
     df["fecha"] = df["ts"].dt.normalize()
 
-    # 1. Dias sin lecturas del sensor: el ultimo dia de cada mes la tabla de
-    #    sensores esta casi vacia aunque los viajes si se hicieron.
     lect_dia = df.groupby(["id_ruta", "fecha"])["lecturas"].transform("sum")
     mediana = df.groupby(["id_ruta", "fecha"])["lecturas"].sum().groupby("id_ruta").median()
     sin_datos = lect_dia < MIN_FRACCION_LECTURAS_DIA * df["id_ruta"].map(mediana)
 
-    # 2. Lecturas imposibles (saltos del contador): se descarta la franja entera
     imposibles = df["max_subida_lectura"] > MAX_SUBIDAS_LECTURA
 
     if verbose:
@@ -123,7 +79,6 @@ def _crear_engine():
         port=int(os.environ.get("SOBUSA_DB_PORT", "5432")),
         database=os.environ.get("SOBUSA_DB_NAME", "dataset"),
     )
-    # Solo lectura + timeout de 5 minutos por consulta (seccion 11.3)
     return create_engine(
         url,
         connect_args={
@@ -146,15 +101,12 @@ QUERY_NOVEDADES = """
     JOIN public.novedades_viales n USING (id_novedad_vial)
 """
 
-ID_PRECARNAVAL = 7         # estacionalidades: Precarnaval y Carnaval de Barranquilla
-ID_CARNAVAL_CENTRAL = 8    # estacionalidades: Carnaval - dias centrales
-ID_SEMANA_SANTA = 10       # estacionalidades: Semana Santa
+ID_PRECARNAVAL = 7
+ID_CARNAVAL_CENTRAL = 8
+ID_SEMANA_SANTA = 10
 
 
 def cargar_calendario():
-    """Festivos, temporadas y eventos: se conocen de antemano, asi que usarlos
-    como variables no es fuga temporal. Se leen de datos/ (extraer_datos.py);
-    si no estan, de la base; sin ninguna de las dos, calendario vacio."""
     if (CARPETA_DATOS / "estacionalidades.parquet").exists():
         estac = pd.read_parquet(CARPETA_DATOS / "estacionalidades.parquet")
         novedades = pd.read_parquet(CARPETA_DATOS / "novedades.parquet")
@@ -172,14 +124,11 @@ def cargar_calendario():
 
 
 def _generar_datos_sinteticos() -> pd.DataFrame:
-    """Misma forma que los datos reales: id_ruta, ts, subidas, bajadas,
-    nro_viajes. Servicio de 04:30 a 22:00."""
     rng = np.random.default_rng(RANDOM_SEED)
     dias = pd.date_range("2023-01-01", "2025-06-30", freq="D")
     franjas = pd.timedelta_range("04:30:00", "21:45:00", freq=f"{PASO_MIN}min")
     minutos = franjas.total_seconds().values / 60
 
-    # Perfil diario con pico de manana (7:00) y de tarde (17:30)
     perfil = (
         4
         + 30 * np.exp(-((minutos - 420) ** 2) / (2 * 60 ** 2))
@@ -188,7 +137,6 @@ def _generar_datos_sinteticos() -> pd.DataFrame:
 
     partes = []
     for id_ruta, escala in [(2, 1.0), (10, 1.4), (11, 0.8)]:
-        # Nivel diario que deriva lentamente: hace utiles los rezagos
         nivel = np.exp(np.cumsum(rng.normal(0, 0.03, len(dias))))
         nivel = nivel / nivel.mean()
         for i, dia in enumerate(dias):
@@ -207,9 +155,6 @@ def _generar_datos_sinteticos() -> pd.DataFrame:
     return pd.concat(partes, ignore_index=True)
 
 
-# ---------------------------------------------------------------------------
-# 2. SERIE REGULAR DE 15 MINUTOS POR RUTA (+ validacion basica, seccion 6.3)
-# ---------------------------------------------------------------------------
 def preparar_serie(crudo: pd.DataFrame) -> pd.DataFrame:
     df = crudo.copy()
     df["ts"] = pd.to_datetime(df["ts"]).dt.floor(f"{PASO_MIN}min")
@@ -230,14 +175,11 @@ def preparar_serie(crudo: pd.DataFrame) -> pd.DataFrame:
         grilla = pd.date_range(inicio, fin, freq=f"{PASO_MIN}min")
         g = g.set_index("ts").reindex(grilla).rename_axis("ts").reset_index()
         g["id_ruta"] = id_ruta
-        g["observado"] = g["subidas"].notna()  # sin servicio o sin dato -> faltante, no cero
+        g["observado"] = g["subidas"].notna()
         partes.append(g)
     return pd.concat(partes, ignore_index=True)
 
 
-# ---------------------------------------------------------------------------
-# 3. VARIABLES POR HORIZONTE (sin fuga temporal: todo usa datos de t - h o antes)
-# ---------------------------------------------------------------------------
 def _dias_en_rangos(rangos: pd.DataFrame) -> set:
     dias = set()
     for ini, fin in zip(rangos["fecha_inicio"], rangos["fecha_fin"]):
@@ -248,7 +190,6 @@ def _dias_en_rangos(rangos: pd.DataFrame) -> set:
 def agregar_calendario(df: pd.DataFrame, calendario) -> pd.DataFrame:
     estac, novedades = calendario
     dia = df["ts"].dt.normalize()
-    # Solo lo que cae dentro de la serie: mismo resultado, mucho mas rapido en el servicio
     d0, d1 = dia.min(), dia.max()
     estac = estac[(pd.to_datetime(estac["fecha_fin"]) >= d0) & (pd.to_datetime(estac["fecha_inicio"]) <= d1)]
     novedades = novedades[pd.to_datetime(novedades["fecha"]).between(d0, d1)]
@@ -262,15 +203,11 @@ def agregar_calendario(df: pd.DataFrame, calendario) -> pd.DataFrame:
     df["carnaval_central"] = dia.isin(carnaval).astype(int)
     df["semana_santa"] = dia.isin(semana_santa).astype(int)
 
-    # 0 = habil, 1 = sabado, 2 = domingo o festivo. El lunes y martes de
-    # Carnaval se comportan como festivo en Barranquilla, asi que tambien
-    # cuentan como tipo 2 (ver eda.ipynb, seccion 6).
     tipo = np.select([df["dia_semana"] == 5, df["dia_semana"] == 6], [1, 2], 0)
     tipo = np.where(df["es_festivo"].eq(1), 2, tipo)
     tipo = np.where(df["carnaval_central"].eq(1) & (df["dia_semana"] < 5), 2, tipo)
     df["tipo_dia"] = tipo
 
-    # Eventos (Guacherna, Batalla de Flores, partidos...): % de impacto en su ventana horaria
     df["impacto_evento"] = 0.0
     hora = df["ts"].dt.time
     for _, n in novedades.iterrows():
@@ -282,10 +219,6 @@ def agregar_calendario(df: pd.DataFrame, calendario) -> pd.DataFrame:
 
 
 def calcular_features(serie: pd.DataFrame, horizonte_min: int, calendario) -> pd.DataFrame:
-    """Variables de todas las franjas de la grilla, con o sin servicio. La usan
-    el entrenamiento y el servicio FastAPI (api_demanda.py), asi ambos calculan
-    exactamente igual. Para la franja t con horizonte h, lo observado solo se
-    toma hasta t - h (la referencia): shift(h) o mas."""
     h = horizonte_min // PASO_MIN
     df = serie.sort_values(["id_ruta", "ts"]).copy()
 
@@ -296,33 +229,25 @@ def calcular_features(serie: pd.DataFrame, horizonte_min: int, calendario) -> pd
     df = agregar_calendario(df, calendario)
 
     g = df.groupby("id_ruta")["subidas"]
-    df["lag_h"] = g.shift(h)                  # ultimo valor conocido al predecir
+    df["lag_h"] = g.shift(h)
     df["lag_h_mas_1"] = g.shift(h + 1)
     df["media_1h_previa"] = g.transform(lambda s: s.shift(h).rolling(4, min_periods=1).mean())
-    df["lag_1d"] = g.shift(PASOS_DIA)         # 96 >= h para los tres horizontes
+    df["lag_1d"] = g.shift(PASOS_DIA)
     df["lag_7d"] = g.shift(PASOS_SEMANA)
     semanas = [g.shift(PASOS_SEMANA * k) for k in range(1, 5)]
     df["prom_4_semanas"] = pd.concat(semanas, axis=1).mean(axis=1)
-    df["lag_364d"] = g.shift(PASOS_ANIO)      # estacionalidad anual, mismo dia de la semana
+    df["lag_364d"] = g.shift(PASOS_ANIO)
 
-    # Nivel de la ruta: subidas medias por franja con servicio en los 28 dias
-    # previos a la referencia (sigue la caida de ~7% anual que muestra el EDA)
     df["nivel_28d"] = g.transform(
         lambda s: s.shift(h).rolling(28 * PASOS_DIA, min_periods=PASOS_DIA).mean()
     )
 
-    # Como va el dia: subidas acumuladas del dia hasta la referencia frente a
-    # lo habitual a esa misma hora (promedio de las 4 semanas previas). Capta
-    # dias atipicos que el calendario no anuncia (lluvia, paros, eventos).
     acum = df.assign(_s=df["subidas"].fillna(0)).groupby(["id_ruta", df["ts"].dt.normalize()])["_s"].cumsum()
     ga = acum.groupby(df["id_ruta"])
     acum_ref = ga.shift(h)
     acum_habitual = pd.concat([ga.shift(h + PASOS_SEMANA * k) for k in range(1, 5)], axis=1).mean(axis=1)
     df["ratio_hoy"] = (acum_ref / acum_habitual).where(acum_habitual >= 50)
 
-    # Oferta: viajes con lecturas en la ultima hora conocida y los habituales en
-    # la franja objetivo. Los viajes programados de la franja objetivo NO se
-    # usan: se registran ~12 min antes de salir, no se conocen a 30-120 min.
     gv = df.groupby("id_ruta")["nro_viajes"]
     df["viajes_1h_previa"] = gv.transform(lambda s: s.shift(h).rolling(4, min_periods=1).mean())
     df["viajes_habituales"] = pd.concat([gv.shift(PASOS_SEMANA * k) for k in range(1, 5)], axis=1).mean(axis=1)
@@ -332,14 +257,11 @@ def calcular_features(serie: pd.DataFrame, horizonte_min: int, calendario) -> pd
 
 
 def construir_features(serie: pd.DataFrame, horizonte_min: int, calendario) -> pd.DataFrame:
-    # Se entrena en toda franja con servicio (XGBoost tolera rezagos faltantes).
-    # Se evalua solo donde existen ambas lineas base.
     df = calcular_features(serie, horizonte_min, calendario)
     return df[df["observado"]].reset_index(drop=True)
 
 
 def particion_temporal(df: pd.DataFrame, frac_val=0.1, frac_test=0.2):
-    """Cortes cronologicos calculados sobre el rango con lineas base."""
     tiempos = np.sort(df.loc[df["tiene_base"], "ts"].unique())
     corte_val = tiempos[int(len(tiempos) * (1 - frac_val - frac_test))]
     corte_test = tiempos[int(len(tiempos) * (1 - frac_test))]
@@ -350,14 +272,10 @@ def particion_temporal(df: pd.DataFrame, frac_val=0.1, frac_test=0.2):
 
 
 def tipo_periodo(df: pd.DataFrame) -> np.ndarray:
-    """Dias especiales (festivo, Carnaval, Semana Santa) frente a dias normales."""
     especial = df["es_festivo"].eq(1) | df["carnaval_central"].eq(1) | df["semana_santa"].eq(1)
     return np.where(especial, "especial", "normal")
 
 
-# ---------------------------------------------------------------------------
-# 4. METRICAS (seccion 9.3)
-# ---------------------------------------------------------------------------
 def metricas(y, yhat) -> dict:
     y, yhat = np.asarray(y, float), np.asarray(yhat, float)
     return {
@@ -375,25 +293,22 @@ def fila(nombre, m):
     )
 
 
-def nuevo_modelo():
+def nuevo_modelo(n_estimators=3000, early_stopping_rounds=50):
     import xgboost as xgb
 
     return xgb.XGBRegressor(
-        objective="count:poisson",   # la demanda es un conteo >= 0
-        n_estimators=1000,
+        objective="count:poisson",
+        n_estimators=n_estimators,
         max_depth=6,
         learning_rate=0.05,
         subsample=0.8,
         colsample_bytree=0.8,
-        early_stopping_rounds=50,    # usa val; test queda intacto
+        early_stopping_rounds=early_stopping_rounds,
         random_state=RANDOM_SEED,
         n_jobs=-1,
     )
 
 
-# ---------------------------------------------------------------------------
-# MAIN
-# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     import shap
 
@@ -406,7 +321,7 @@ if __name__ == "__main__":
         f"| Desde {obs['ts'].min():%Y-%m-%d} hasta {obs['ts'].max():%Y-%m-%d}"
     )
 
-    os.makedirs("modelos", exist_ok=True)
+    CARPETA_MODELOS.mkdir(exist_ok=True)
 
     for horizonte in HORIZONTES_MIN:
         df = construir_features(serie, horizonte, calendario)
@@ -452,9 +367,14 @@ if __name__ == "__main__":
         top = importancia.sort_values(ascending=False).head(5)
         print("  Top 5 variables (SHAP): " + ", ".join(top.index))
 
-        # Artefacto + metadatos (seccion 9.2)
-        base = f"modelos/demanda_h{horizonte}"
-        modelo.save_model(f"{base}.json")
+        n_arboles = modelo.best_iteration + 1
+        final = nuevo_modelo(n_estimators=n_arboles, early_stopping_rounds=None)
+        final.fit(df[FEATURES], df["subidas"], verbose=False)
+        print(f"  Modelo final: {n_arboles} arboles, reentrenado con {len(df):,} franjas "
+              f"({df['ts'].min():%Y-%m-%d} a {df['ts'].max():%Y-%m-%d})")
+
+        base = CARPETA_MODELOS / f"demanda_h{horizonte}"
+        final.save_model(f"{base}.json")
         with open(f"{base}_meta.json", "w", encoding="utf-8") as f:
             json.dump(
                 {
@@ -465,6 +385,9 @@ if __name__ == "__main__":
                     "data_cutoff": str(df["ts"].max()),
                     "corte_validacion": str(c_val),
                     "corte_prueba": str(c_test),
+                    "entrenado_con": "todas las franjas con servicio (train + val + test)",
+                    "franjas_entrenamiento": len(df),
+                    "n_arboles": n_arboles,
                     "generated_at": datetime.now(timezone.utc).isoformat(),
                     "semilla": RANDOM_SEED,
                     "fuente": "sensores" if ARCHIVO_DEMANDA.exists() else "sintetica",
@@ -473,4 +396,4 @@ if __name__ == "__main__":
                 f, ensure_ascii=False, indent=2,
             )
 
-    print("\nModelos y metadatos guardados en la carpeta modelos/")
+    print(f"\nModelos y metadatos guardados en {CARPETA_MODELOS}")

@@ -1,21 +1,3 @@
-"""
-Servicio FastAPI de prediccion de demanda - SOBUSA Data Challenge 2026.
-
-Sirve los modelos que entrena modelo_demanda.py (carpeta modelos/) y calcula
-las variables con las mismas funciones del entrenamiento, para que el modelo
-reciba al predecir exactamente lo que vio al entrenar.
-
-Al arrancar carga en memoria la copia local de datos/ que genera
-extraer_datos.py (subidas por ruta y franja de 15 min de 2023 a 2025, ya
-limpias con las mismas reglas del entrenamiento), el calendario y los nombres
-de las rutas. Cada prediccion se resuelve en memoria, sin consultar la base.
-Para tomar datos nuevos, corra extraer_datos.py y reinicie el servicio.
-
-Ejecucion:
-    uvicorn api_demanda:app --reload        (o: python api_demanda.py)
-Documentacion interactiva: http://127.0.0.1:8000/docs
-"""
-
 import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -31,17 +13,13 @@ from pydantic import BaseModel, Field
 import modelo_demanda as md
 
 CARPETA_MODELOS = Path(__file__).resolve().parent / "modelos"
-ZONA_HORARIA = "America/Bogota"     # las franjas de la base estan en hora local
-HORAS_MINIMAS_HISTORIA = 48         # sin datos en las 48 h previas no se predice (cubre
-                                    # el dia sin sensor de fin de mes)
-DIAS_HISTORIA = 371                 # lag_364d mira 364 dias atras, con margen
+ZONA_HORARIA = "America/Bogota"
+HORAS_MINIMAS_HISTORIA = 48
+DIAS_HISTORIA = 371
 
 estado: dict = {}
 
 
-# ---------------------------------------------------------------------------
-# CARGA AL ARRANCAR
-# ---------------------------------------------------------------------------
 def _cargar_modelos() -> dict:
     modelos = {}
     for h in md.HORIZONTES_MIN:
@@ -53,7 +31,6 @@ def _cargar_modelos() -> dict:
             raise RuntimeError(
                 f"No existe {base}_meta.json. Entrene primero: python modelo_demanda.py"
             ) from None
-        # Un modelo entrenado con otras variables predeciria basura en silencio
         if meta["feature_version"] != md.FEATURE_VERSION or meta["features"] != md.FEATURES:
             raise RuntimeError(
                 f"{base.name} se entreno con variables '{meta['feature_version']}' y el "
@@ -91,9 +68,6 @@ app = FastAPI(
 )
 
 
-# ---------------------------------------------------------------------------
-# ESQUEMAS DE RESPUESTA
-# ---------------------------------------------------------------------------
 class Prediccion(BaseModel):
     horizonte_min: int
     franja_objetivo: datetime = Field(description="Inicio de la franja de 15 min que se predice")
@@ -128,9 +102,6 @@ class Ruta(BaseModel):
     franjas_con_servicio: int
 
 
-# ---------------------------------------------------------------------------
-# PREDICCION
-# ---------------------------------------------------------------------------
 def _o_nada(valor) -> float | None:
     return None if pd.isna(valor) else round(float(valor), 2)
 
@@ -145,9 +116,6 @@ def _normalizar_referencia(referencia: datetime | None, obs_ruta: pd.DataFrame) 
 
 
 def _serie_conocida(ruta: pd.DataFrame, referencia: pd.Timestamp, hasta: pd.Timestamp) -> pd.DataFrame:
-    """Grilla regular de la ruta desde DIAS_HISTORIA dias antes de la referencia
-    hasta la ultima franja objetivo. Lo posterior a la referencia se borra: al
-    predecir solo se conoce lo ocurrido hasta la referencia."""
     inicio = max(referencia.normalize() - pd.Timedelta(days=DIAS_HISTORIA), ruta["ts"].min())
     grilla = pd.date_range(inicio, hasta, freq=f"{md.PASO_MIN}min")
     g = ruta.set_index("ts").reindex(grilla).rename_axis("ts").reset_index()
@@ -157,9 +125,6 @@ def _serie_conocida(ruta: pd.DataFrame, referencia: pd.Timestamp, hasta: pd.Time
     return g
 
 
-# ---------------------------------------------------------------------------
-# ENDPOINTS
-# ---------------------------------------------------------------------------
 @app.get("/", include_in_schema=False)
 def inicio():
     return RedirectResponse("/docs")
@@ -178,7 +143,6 @@ def salud():
 
 @app.get("/modelos")
 def modelos():
-    """Metadatos de cada modelo (seccion 9.2), con sus metricas de prueba."""
     return [estado["modelos"][h][1] for h in sorted(estado["modelos"])]
 
 
@@ -207,7 +171,6 @@ def prediccion(
         examples=["2023-02-20T17:00:00"],
     ),
 ):
-    """Subidas previstas en la ruta a 30, 60 y 120 minutos de la referencia."""
     serie = estado["serie"]
     ruta = serie[serie["id_ruta"] == id_ruta]
     if ruta.empty:

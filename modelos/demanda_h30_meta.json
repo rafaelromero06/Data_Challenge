@@ -29,7 +29,10 @@
   "data_cutoff": "2025-12-30 23:45:00",
   "corte_validacion": "2025-02-11 09:45:00",
   "corte_prueba": "2025-05-30 05:00:00",
-  "generated_at": "2026-09-30T03:56:24.086289+00:00",
+  "entrenado_con": "todas las franjas con servicio (train + val + test)",
+  "franjas_entrenamiento": 243001,
+  "n_arboles": 1809,
+  "generated_at": "2026-10-11T16:49:10.620741+00:00",
   "semilla": 42,
   "fuente": "sensores",
   "metricas_prueba": {
@@ -46,10 +49,10 @@
       "sMAPE": 0.23405612560886696
     },
     "XGBoost": {
-      "MAE": 17.037660304041154,
-      "RMSE": 26.259118315265113,
-      "WAPE": 0.10386329165402729,
-      "sMAPE": 0.19815650132698684
+      "MAE": 16.900252653028097,
+      "RMSE": 26.15229221880649,
+      "WAPE": 0.10302564078659693,
+      "sMAPE": 0.1978194466606607
     }
   }
 }
